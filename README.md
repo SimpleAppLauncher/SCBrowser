@@ -1,9 +1,21 @@
+> [!WARNING]
+> **⚠️ ARCHIVED — this project is broken and no longer maintained.**
+> The maintainers have archived this repository (read-only). The core design
+> (a rebranded/re-wrapped Chromium bundle) fought macOS code-signing at every
+> step, and the approach was abandoned in favor of lighter bases. The code is
+> kept for historical/reference purposes only — do not use it in production.
+> See [INFO.md](INFO.md) §0 for the post-mortem.
+>
+> **License:** GNU General Public License v3.0 (GPLv3) — the Linux-style
+> copyleft: if you use, modify, or redistribute this code, your version must
+> also be open-sourced under the GPL. See [LICENSE](LICENSE).
+
 <p align="center">
   <img src="assets/logo.png" alt="SCBrowser logo" width="180">
 </p>
 
 <h1 align="center">SCBrowser</h1>
-<p align="center"><b>SimpleChromiumBrowser</b> — a privacy-focused Chromium browser for macOS Apple Silicon, controlled entirely from your terminal.</p>
+<p align="center"><b>SimpleChromiumBrowser</b> — a privacy-focused Chromium browser for macOS Apple Silicon, controlled entirely from your terminal. <i>(Archived — see warning above.)</i></p>
 
 <p align="center">
   <a href="#install">Install</a> ·
@@ -115,3 +127,9 @@ brew uninstall --cask ungoogled-chromium
 
 *SCBrowser is a wrapper around ungoogled-chromium, not a Chromium fork.
 Chromium and ungoogled-chromium are trademarks of their respective owners.*
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE). Same copyleft family
+as the Linux kernel (GPL): use, modify, or redistribute it, and your version
+must be open-sourced under the GPL too.

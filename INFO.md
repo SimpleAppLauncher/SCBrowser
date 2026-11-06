@@ -1,5 +1,38 @@
 # INFO — SCBrowser deep dive
 
+> **⚠️ ARCHIVED / BROKEN — no longer maintained.** This repository is
+> read-only. See §0 for the post-mortem. Licensed under GPLv3 (see
+> [LICENSE](LICENSE)).
+
+## 0. Post-mortem (why this project was archived)
+
+SCBrowser was archived because the core approach did not hold up:
+
+1. **Bundle rebranding vs. code signing.** The original design rebranded
+   `Info.plist` and used a shell wrapper as the executable. Chromium's
+   Developer ID signature carries a `kill` flag, so any bundle edit
+   invalidates it and macOS SIGKILLs every launch. Self-signed identities
+   import as untrusted and cannot re-sign it; ad-hoc signing breaks library
+   validation. The workaround (byte-identical bundle, CLI-injected flags)
+   worked, but left a browser that could never be edited, rebranded, or
+   given a custom icon without breaking itself.
+2. **Keychain encryption is hardcoded.** Chromium's OSCrypt service name
+   (`Chromium Safe Storage`) is baked into the binary — a dedicated
+   per-app entry is impossible without a full Chromium source rebuild
+   (~150 GB, 16 GB+ RAM). The "relaunch to keep things encrypted" banner
+   was a direct consequence of the rebranded identity.
+3. **Maintenance cost.** Every Chromium upgrade required a careful rebuild,
+   and upgrading while a browser was running broke the running instance.
+   GPC (Global Privacy Control) is unfixable on Chromium at the binary
+   level (DNR forbids `sec-*` header changes, no GPC pref in ungoogled).
+4. **Weight.** On Chromium, ~400 MB footprint after heavy use is the floor,
+   not a bug — site-isolated multi-process architecture. Lighter bases
+   (Firefox/LibreWolf, WebKit/Orion) trade away the CDP terminal control
+   or the MV3 extension model this project depended on.
+
+The code is preserved as-is for reference. If revived, start from a
+Firefox-based or WebKit-based design instead of re-wrapping Chromium.
+
 All the nerdy stuff: architecture, signing, Keychain, cold start, flags,
 RAM methodology, known limitations, and troubleshooting. For the quick start,
 see [README.md](README.md).
