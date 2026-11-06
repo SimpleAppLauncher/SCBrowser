@@ -1,0 +1,12 @@
+# Built app — rebuilt by scripts/build-app.sh, never committed
+/SCBrowser.app/
+
+# Local state / logs / test artifacts
+*.log
+screenshot.png
+mode.txt
+.DS_Store
+__pycache__/
+*.pyc
+profile/
+config/*.bak

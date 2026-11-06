@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+SCBrowser CLI - SimpleChromiumBrowser (ungoogled-chromium wrapper, macOS arm64)
+1-line, non-interactive control. No prompts, ever.
+
+Usage:
+  scbrowser open [URL]            launch (hidden) if needed + open URL in new tab
+  scbrowser navigate URL          navigate active tab
+  scbrowser navigate URL --new    navigate in new tab
+  scbrowser show                  bring hidden window to front
+  scbrowser hide                  minimize window
+  scbrowser screenshot [OUT.png]  capture active tab PNG (default: ~/SCBrowser/screenshot.png)
+  scbrowser tabs                  list tabs
+  scbrowser eval '<js>'           evaluate JS in active tab, print result
+  scbrowser mode aggressive|normal  set extension mode (best-effort via extension target; else use popup)
+  scbrowser status                version, tabs, RAM (sum of Chromium RSS)
+  scbrowser memory                RAM report (for YouTube <400MB goal)
+  scbrowser close                 quit browser
+  scbrowser help
+Hidden window: launched headful but minimized/offscreen; `show` reveals it anytime.
+"""
+import sys, os, json, time, base64, socket, ssl, hashlib, struct, subprocess, urllib.request, urllib.parse, urllib.error
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+APP_BIN = os.path.join(ROOT, "SCBrowser.app", "Contents", "MacOS", "Chromium")
+ORIGINAL_CHROMIUM = "/Applications/Chromium.app"  # never launched by this CLI
+PROFILE = os.path.expanduser("~/Library/Application Support/SCBrowser")
+EXT = os.path.join(ROOT, "extension")
+FLAGS_FILE = os.path.join(ROOT, "config", "privacy-flags.txt")
+LOG = os.path.join(ROOT, "scbrowser.log")
+PORT = 9222  # fixed by SCBrowser.app wrapper; SCBrowser-only, not your Chromium
+BASE = f"http://127.0.0.1:{PORT}"
+
+# ---------- HTTP CDP ----------
+def http(path, method="GET", timeout=5):
+    req = urllib.request.Request(BASE + path, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read()
+        return json.loads(data) if data else {}
+
+def running():
+    try:
+        return http("/json/version")
+    except Exception:
+        return None
+
+def tabs():
+    try:
+        return http("/json/list")
+    except Exception:
+        return []
+
+def page_tabs():
+    return [t for t in tabs() if t.get("type") == "page"]
+
+def active_tab():
+    ts = page_tabs()
+    return ts[0] if ts else None
+
+def wait_ready(seconds=30, proc=None):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if running():
+            return True
+        if proc is not None and proc.poll() is not None:
+            return False  # died (e.g. SIGKILL 137) - fail fast, let caller retry
+        time.sleep(0.3)
+    return False
+
+# ---------- Minimal WebSocket client (stdlib only) ----------
+class WS:
+    def __init__(self, url):
+        # ws://host:port/path
+        rest = url[5:]
+        hostport, _, path = rest.partition("/")
+        host, _, port = hostport.partition(":")
+        self.sock = socket.create_connection((host, int(port or 80)), timeout=10)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = (f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
+               f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        self.sock.sendall(req.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            buf += self.sock.recv(4096)
+        if b"101" not in buf.split(b"\r\n")[0]:
+            raise RuntimeError(f"WS handshake failed: {buf[:200]}")
+        self._buf = b""
+        self._id = 0
+    def _recv_exact(self, n):
+        while len(self._buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise RuntimeError("WS closed")
+            self._buf += chunk
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+    def _send_frame(self, payload: bytes, opcode=1):
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        header = bytes([0x80 | opcode])
+        ln = len(payload)
+        if ln < 126:
+            header += bytes([0x80 | ln])
+        elif ln < 65536:
+            header += bytes([0x80 | 126]) + struct.pack(">H", ln)
+        else:
+            header += bytes([0x80 | 127]) + struct.pack(">Q", ln)
+        self.sock.sendall(header + mask + masked)
+    def _recv_frame(self):
+        b = self._recv_exact(2)
+        fin, op = bool(b[0] & 0x80), b[0] & 0x0F
+        masked = bool(b[1] & 0x80)
+        ln = b[1] & 0x7F
+        if ln == 126:
+            ln = struct.unpack(">H", self._recv_exact(2))[0]
+        elif ln == 127:
+            ln = struct.unpack(">Q", self._recv_exact(8))[0]
+        mask = self._recv_exact(4) if masked else None
+        payload = self._recv_exact(ln) if ln else b""
+        if mask:
+            payload = bytes(x ^ mask[i % 4] for i, x in enumerate(payload))
+        return fin, op, payload
+    def call(self, method, params=None, timeout=15, session_id=None):
+        self._id += 1
+        mid = self._id
+        msg = {"id": mid, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        self._send_frame(json.dumps(msg).encode())
+        self.sock.settimeout(timeout)
+        fragments = b""
+        while True:
+            fin, op, payload = self._recv_frame()
+            if op == 9:  # ping -> pong
+                self._send_frame(payload, opcode=10)
+                continue
+            if op == 10:
+                continue
+            if op == 0:  # continuation
+                fragments += payload
+            else:
+                fragments = payload
+            if not fin:
+                continue
+            try:
+                msg = json.loads(fragments)
+            except Exception:
+                continue
+            if msg.get("id") == mid:
+                if "error" in msg:
+                    raise RuntimeError(msg["error"])
+                return msg.get("result", {})
+    def close(self):
+        try: self.sock.close()
+        except Exception: pass
+
+def cdp(ws_url, method, params=None):
+    ws = WS(ws_url)
+    try:
+        return ws.call(method, params)
+    finally:
+        ws.close()
+
+# ---------- Launch ----------
+def read_flags():
+    flags = []
+    if os.path.exists(FLAGS_FILE):
+        for line in open(FLAGS_FILE):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                flags.append(line)
+    return flags
+
+def launch(hidden=True):
+    if running():
+        return False
+    if not os.path.exists(APP_BIN):
+        print(f"SCBrowser.app not built. Run: {ROOT}/scripts/build-app.sh", file=sys.stderr)
+        sys.exit(2)
+    os.makedirs(PROFILE, exist_ok=True)
+    # Launch the signed Chromium binary directly with all flags here.
+    # (The old in-bundle shell wrapper + rebranded Info.plist broke the
+    # signature -> AMFI SIGKILL on every exec. Bundle is now byte-identical
+    # to the signed original; only profile/port/flags differ per-launch.
+    # NOTE: launch via this CLI, not by double-clicking the .app in Finder,
+    # which would open stock Chromium with the default profile.)
+    args = [APP_BIN,
+            f"--user-data-dir={PROFILE}",
+            "--remote-debugging-port=9222",
+            f"--load-extension={EXT}",
+            "--window-size=1280,900",
+            "--window-position=80,80",
+            "--disable-session-crashed-bubble",
+            "--start-maximized",
+            ] + read_flags()
+    # macOS intermittently SIGKILLs (137) the first exec after the bundle was
+    # modified/rebuilt. Retry ONLY if the process actually exited - spawning a
+    # second instance on the same profile triggers a profile-lock modal alert
+    # (NSAlert) that blocks startup forever. If it's still running, just wait.
+    proc = None
+    for attempt in range(4):
+        logf = open(LOG, "ab")
+        proc = subprocess.Popen(args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        if wait_ready(30, proc=proc):
+            break
+        if proc.poll() is None:
+            # Still alive but not listening (slow cold start): keep waiting.
+            if wait_ready(60, proc=proc):
+                break
+            print("Browser process is running but DevTools is not responding "
+                  "(possible modal dialog - run `scbrowser show` to look). Log:", LOG, file=sys.stderr)
+            sys.exit(3)
+        time.sleep(2)
+    else:
+        print("Browser failed to start. Log:", LOG, file=sys.stderr)
+        sys.exit(3)
+    if hidden:
+        time.sleep(0.5)
+        hide_window()
+    return True
+
+def hide_window():
+    # Minimize SCBrowser ONLY (never your Chromium.app). Best-effort, macOS.
+    try:
+        subprocess.run(["osascript", "-e",
+            'tell application "SCBrowser" to set miniaturized of front window to true'],
+            timeout=5, capture_output=True)
+    except Exception:
+        pass
+
+def show_window():
+    if not running():
+        launch(hidden=False)
+        return
+    try:
+        subprocess.run(["osascript", "-e", 'tell application "SCBrowser" to activate'],
+                       timeout=5, capture_output=True)
+    except Exception:
+        pass
+    # Ask CDP to activate first tab too
+    t = active_tab()
+    if t:
+        try: http(f"/json/activate/{t['id']}")
+        except Exception: pass
+
+def normalize(url):
+    if not url:
+        return "about:blank"
+    if "://" not in url and not url.startswith("about:"):
+        url = "https://" + url
+    return url
+
+def new_tab(url):
+    # Newer Chromium requires PUT /json/new
+    try:
+        return http("/json/new?" + urllib.parse.urlencode({"url": url}), method="PUT")
+    except urllib.error.HTTPError:
+        return http("/json/new?" + urllib.parse.urlencode({"url": url}))
+
+def navigate(url, new=False):
+    url = normalize(url)
+    if new or not active_tab():
+        t = new_tab(url)
+        # /json/new may ignore ?url= on newer Chromium - navigate explicitly via CDP
+        try:
+            fresh = [x for x in page_tabs() if x.get("id") == t.get("id")]
+            ws_url = (fresh[0] if fresh else t).get("webSocketDebuggerUrl")
+            if ws_url:
+                cdp(ws_url, "Page.navigate", {"url": url})
+        except Exception as e:
+            print(f"warn: explicit navigate failed: {e}", file=sys.stderr)
+        print(json.dumps({"id": t.get("id"), "url": url, "title": t.get("title", "")}))
+    else:
+        t = active_tab()
+        cdp(t["webSocketDebuggerUrl"], "Page.navigate", {"url": url})
+        print(json.dumps({"id": t["id"], "url": url}))
+
+def footprint_mb():
+    """Sum of physical footprint (MB) across SCBrowser tree. RSS sum
+    double-counts shared framework pages across ~10 processes, so footprint
+    is the honest RAM number (macOS `footprint` per pid)."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True, timeout=5).stdout
+        procs = []
+        for line in out.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) == 3:
+                try: procs.append((int(parts[0]), int(parts[1]), parts[2]))
+                except Exception: pass
+        roots = [pid for pid, ppid, cmd in procs if "SCBrowser.app" in cmd and "user-data-dir=" in cmd]
+        if not roots:
+            return 0.0
+        children = {}
+        for pid, ppid, cmd in procs:
+            children.setdefault(ppid, []).append(pid)
+        wanted, stack = set(), list(roots)
+        while stack:
+            pid = stack.pop()
+            if pid in wanted: continue
+            wanted.add(pid); stack.extend(children.get(pid, []))
+        total = 0.0
+        for pid in wanted:
+            try:
+                o = subprocess.run(["footprint", str(pid)], capture_output=True, text=True, timeout=10).stdout
+                for line in o.splitlines():
+                    if "Footprint:" in line:
+                        # e.g. "Footprint: 91 MB" or "Footprint: 3940 KB"
+                        num = line.split("Footprint:")[1].strip().split()
+                        v = float(num[0])
+                        total += v / 1024.0 if num[1].upper().startswith("KB") else v
+                        break
+            except Exception:
+                pass
+        return total
+    except Exception:
+        return -1
+
+def mem_mb():
+    """Sum RSS of SCBrowser process TREE only (main + helpers). Never counts
+    /Applications/Chromium.app - helpers have no profile in argv, so tree
+    descent from the SCBrowser main process is the only correct way."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,command="], capture_output=True, text=True, timeout=5).stdout
+        procs = []
+        for line in out.splitlines():
+            parts = line.strip().split(None, 3)
+            if len(parts) == 4:
+                try: procs.append((int(parts[0]), int(parts[1]), int(parts[2]), parts[3]))
+                except Exception: pass
+        roots = [pid for pid, ppid, rss, cmd in procs
+                 if "SCBrowser.app" in cmd and "user-data-dir=" in cmd]
+        if not roots:
+            return 0.0
+        children = {}
+        for pid, ppid, rss, cmd in procs:
+            children.setdefault(ppid, []).append(pid)
+        wanted, stack = set(), list(roots)
+        rss_by_pid = {pid: rss for pid, ppid, rss, cmd in procs}
+        while stack:
+            pid = stack.pop()
+            if pid in wanted: continue
+            wanted.add(pid)
+            stack.extend(children.get(pid, []))
+        return sum(rss_by_pid.get(p, 0) for p in wanted) / 1024.0
+    except Exception:
+        return -1
+
+def cmd_open(rest):
+    url = rest[0] if rest else "https://privacytests.org/"
+    launch(hidden=True)
+    navigate(url, new=True)
+
+def cmd_screenshot(rest):
+    t = active_tab()
+    if not t:
+        print("No tab open. Run: scbrowser open <url>", file=sys.stderr); sys.exit(1)
+    out = rest[0] if rest else os.path.join(ROOT, "screenshot.png")
+    res = cdp(t["webSocketDebuggerUrl"], "Page.captureScreenshot", {"format": "png"})
+    data = res.get("data", "")
+    if not data:
+        print("Screenshot failed (empty data)", file=sys.stderr); sys.exit(1)
+    open(out, "wb").write(base64.b64decode(data))
+    print(out)
+
+def cmd_eval(rest):
+    if not rest:
+        print("Usage: scbrowser eval '<js>'", file=sys.stderr); sys.exit(2)
+    t = active_tab()
+    if not t:
+        print("No tab open.", file=sys.stderr); sys.exit(1)
+    res = cdp(t["webSocketDebuggerUrl"], "Runtime.evaluate",
+              {"expression": rest[0], "returnByValue": True, "awaitPromise": True})
+    print(json.dumps(res.get("result", {}).get("value"), default=str))
+
+def cmd_mode(rest):
+    if not rest or rest[0] not in ("aggressive", "normal"):
+        print("Usage: scbrowser mode aggressive|normal", file=sys.stderr); sys.exit(2)
+    mode = rest[0]
+    open(os.path.join(ROOT, "mode.txt"), "w").write(mode + "\n")
+    info = running()
+    if not info or not info.get("webSocketDebuggerUrl"):
+        print(f"mode recorded as {mode}; browser not running - it will apply when you open the popup. File: {ROOT}/mode.txt")
+        return
+    # Ask browser for all targets (incl. extension service workers, not in /json/list)
+    try:
+        ws = WS(info["webSocketDebuggerUrl"])
+        try:
+            targets = ws.call("Target.getTargets", {}).get("targetInfos", [])
+            ext = [t for t in targets if str(t.get("url", "")).startswith("chrome-extension://")]
+            if not ext:
+                print(f"mode recorded as {mode}; extension worker not found yet. Use the shield popup (toolbar) to confirm. File: {ROOT}/mode.txt")
+                return
+            for t in ext:
+                attached = ws.call("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True})
+                sid = attached.get("sessionId")
+                # Run the same logic as background.js applyMode, in SW context
+                expr = ("(async()=>{await chrome.storage.local.set({mode:'%s'});"
+                        "await chrome.declarativeNetRequest.updateEnabledRulesets({"
+                        "enableRulesetIds:%s,disableRulesetIds:%s});return 'ok'})()"
+                        % (mode,
+                           "['normal_rules','aggressive_rules']" if mode == "aggressive" else "['normal_rules']",
+                           "[]" if mode == "aggressive" else "['aggressive_rules']"))
+                ws.call("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": True}, session_id=sid)
+            print(f"mode set to {mode} via extension service worker ({len(ext)} target(s))")
+        finally:
+            ws.close()
+    except Exception as e:
+        print(f"mode recorded as {mode}; CDP set failed ({e}). Use the shield popup (toolbar icon). File: {ROOT}/mode.txt")
+
+def cmd_close():
+    info = running()
+    if not info:
+        # CDP may be down while a modal-blocked process still runs - clean it up.
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+            killed = 0
+            for line in out.splitlines():
+                if "SCBrowser.app" in line and "--user-data-dir=" in line:
+                    os.kill(int(line.strip().split()[0]), 9); killed += 1
+            print("closed (killed modal-blocked process)" if killed else "not running")
+        except Exception:
+            print("not running")
+        return
+    # Try Browser.close via browser websocket
+    try:
+        ws_url = info.get("webSocketDebuggerUrl")
+        if ws_url:
+            cdp(ws_url, "Browser.close", {})
+    except Exception:
+        pass
+    time.sleep(0.5)
+    if running():
+        # Fallback: kill ONLY SCBrowser.app processes (never /Applications/Chromium.app)
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+            for line in out.splitlines():
+                if "SCBrowser.app" in line and f"--remote-debugging-port={PORT}" in line:
+                    pid = int(line.strip().split()[0])
+                    os.kill(pid, 15)
+        except Exception:
+            pass
+    print("closed")
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__); return
+    cmd, rest = sys.argv[1], sys.argv[2:]
+    if cmd in ("help", "-h", "--help"):
+        print(__doc__)
+    elif cmd == "open":
+        cmd_open(rest)
+    elif cmd == "navigate":
+        if not rest: print("Usage: scbrowser navigate <url> [--new]", file=sys.stderr); sys.exit(2)
+        launch(hidden=True)
+        navigate(rest[0], new=True if "--new" in rest else False)
+    elif cmd == "show":
+        show_window(); print("shown")
+    elif cmd == "hide":
+        hide_window(); print("hidden")
+    elif cmd == "screenshot":
+        cmd_screenshot(rest)
+    elif cmd == "tabs":
+        print(json.dumps(page_tabs(), indent=2))
+    elif cmd == "eval":
+        cmd_eval(rest)
+    elif cmd == "mode":
+        cmd_mode(rest)
+    elif cmd == "status":
+        info = running()
+        if not info:
+            print(json.dumps({"running": False})); return
+        print(json.dumps({"running": True, "version": info.get("Browser"),
+                          "tabs": len(page_tabs()), "ram_mb_total_chromium": round(mem_mb(), 1),
+                          "profile": PROFILE, "port": PORT}, indent=2))
+    elif cmd == "memory":
+        print(json.dumps({"ram_mb_rss_sum": round(mem_mb(), 1),
+                          "ram_mb_footprint_total": round(footprint_mb(), 1),
+                          "note": "Footprint is the honest physical RAM (RSS sum double-counts shared pages). Single-tab light site target <400MB footprint; YouTube video will exceed it - see README."}, indent=2))
+    elif cmd == "close":
+        cmd_close()
+    else:
+        print(f"Unknown command: {cmd}\n{__doc__}", file=sys.stderr); sys.exit(2)
+
+if __name__ == "__main__":
+    main()

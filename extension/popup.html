@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body{font-family:-apple-system,system-ui,sans-serif;width:300px;margin:0;padding:14px;background:#111;color:#eee}
+h1{font-size:15px;margin:0 0 4px} p{font-size:12px;color:#aaa;margin:4px 0 10px;line-height:1.4}
+label{display:block;font-size:13px;padding:8px;border:1px solid #333;border-radius:8px;margin:6px 0;cursor:pointer}
+label:has(input:checked){border-color:#4caf7d;background:#1a2a22}
+small{display:block;color:#888;font-size:11px;margin-top:2px}
+#status{font-size:12px;margin-top:8px;color:#4caf7d}
+</style></head><body>
+<h1>🛡️ SCBrowser Privacy Shield</h1>
+<p>Normal = ungoogled defaults (tracker blocking). Aggressive = fingerprint spoofing + strict settings. Reload pages after switching to Aggressive.</p>
+<label><input type="radio" name="mode" value="normal"> Normal <small>Ungoogled-chromium defaults. Sites work best.</small></label>
+<label><input type="radio" name="mode" value="aggressive"> Aggressive <small>Best for privacytests.org. May break some sites. Spoofs canvas/WebGL/audio/fonts, blocks more trackers.</small></label>
+<div id="status">Loading…</div>
+<script src="popup.js"></script>
+</body></html>

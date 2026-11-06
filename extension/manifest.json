@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "SCBrowser Privacy Shield",
+  "version": "1.0.1",
+  "description": "SCBrowser privacy extension. Normal = ungoogled-chromium defaults (tracker blocking only). Aggressive = fingerprint spoofing + tracker + leak protections for privacytests.org.",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SCBrowser Privacy Shield"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "ISOLATED"
+    }
+  ],
+  "permissions": ["storage", "declarativeNetRequest", "privacy", "tabs", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "normal_rules", "enabled": true, "path": "rules_normal.json" },
+      { "id": "aggressive_rules", "enabled": false, "path": "rules_aggressive.json" }
+    ]
+  },
+  "web_accessible_resources": [],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

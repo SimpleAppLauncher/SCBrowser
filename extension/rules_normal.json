@@ -1,0 +1,12 @@
+[
+  {"id":1,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||www.google-analytics.com^","resourceTypes":["script","xmlhttprequest","image","sub_frame"]}},
+  {"id":2,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||googletagmanager.com^","resourceTypes":["script"]}},
+  {"id":3,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||doubleclick.net^","resourceTypes":["script","image","sub_frame"]}},
+  {"id":4,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||connect.facebook.net^","resourceTypes":["script"]}},
+  {"id":5,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||hotjar.com^","resourceTypes":["script"]}},
+  {"id":6,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||fullstory.com^","resourceTypes":["script"]}},
+  {"id":7,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||segment.io^","resourceTypes":["script","xmlhttprequest"]}},
+  {"id":8,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||mixpanel.com^","resourceTypes":["script","xmlhttprequest"]}},
+  {"id":9,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||amplitude.com^","resourceTypes":["script","xmlhttprequest"]}},
+  {"id":10,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||sentry-cdn.com^","resourceTypes":["script"]}}
+]

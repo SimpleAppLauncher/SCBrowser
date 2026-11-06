@@ -1,0 +1,43 @@
+{
+  "mode": "aggressive",
+  "pages": {
+    "misc (Tor/GPC/ECH)": "{\"Tor enabled\":{\"IsTorExit\":false,\"passed\":false,\"description\":\"The Tor network sends the browser's web requests through a series of relays to hide a user's IP address, thereby helping to mask their identity and location. This test checks to see if the Tor network is being used by default.\"},\"GPC enabled third-party\":{\"passed\":false,\"description\":\"The Global Privacy Control is an HTTP header that can be sent by a browser to instruct a visited website not to sell the user's personal data to other parties. This test checks to see if the GPC header is sent to third-party elements on the web page.\"},\"ECH enabled\":{\"SNI_status\":\"encrypted\",\"passed\":true,\"description\":\"Encrypted Client Hello (ECH) is a new protocol that hides the website you are visiting from third-party network eavesdroppers.\"}}",
+    "tracking_content": "",
+    "https (HTTPS upgrade)": "{\"Upgradable image\":{\"passed\":true,\"result\":\"upgraded\",\"description\":\"Checks to see if the browser attempts to upgrade an insecure address for an image to HTTPS whenever possible.\"},\"Upgradable script\":{\"passed\":true,\"result\":\"blocked\",\"description\":\"Checks to see if the browser attempts to upgrade an insecure address for an script to HTTPS whenever possible.\"}}",
+    "query (tracking params)": ""
+  },
+  "fingerprint": {
+    "webdriver": false,
+    "hardwareConcurrency": 8,
+    "deviceMemory": 8,
+    "platform": "MacIntel",
+    "languages": [
+      "en-GB",
+      "en-US",
+      "en"
+    ],
+    "screen": [
+      1470,
+      956,
+      30
+    ],
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "uaData": [
+      {
+        "brand": "Not A(Brand",
+        "version": "99"
+      },
+      {
+        "brand": "Chromium",
+        "version": "154"
+      }
+    ],
+    "canvas": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAAyCAYAAA",
+    "webgl_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+    "webgl_vendor": "Google Inc. (Apple)",
+    "webrtc": "needs-async-check",
+    "webrtc_public_ips": [
+      "192.168.1.123"
+    ]
+  }
+}
